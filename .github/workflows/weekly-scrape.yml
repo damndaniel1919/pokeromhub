@@ -1,0 +1,56 @@
+name: Weekly Game Scraper
+
+on:
+  schedule:
+    - cron: '0 23 * * 0'
+  workflow_dispatch:
+
+jobs:
+  scrape-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run scraper
+        run: python scripts/scraper.py
+
+      - name: Inject games.json into index.html
+        run: python scripts/inject_games.py
+
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            NEW=$(python -c "import json; c=json.load(open('data/changes.json')); print(len(c['new_games']))")
+            STATUS=$(python -c "import json; c=json.load(open('data/changes.json')); print(len(c['status_changes']))")
+            echo "new_count=$NEW" >> $GITHUB_OUTPUT
+            echo "status_count=$STATUS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push changes
+        if: steps.check_changes.outputs.changed == 'true'
+        run: |
+          git config user.name "PokeROMHub Bot"
+          git config user.email "bot@pokeromhub.com"
+          git add data/games.json data/changes.json index.html
+          git commit -m "🤖 Weekly update: +${{ steps.check_changes.outputs.new_count }} games, ${{ steps.check_changes.outputs.status_count }} status changes"
+          git push
+
+      - name: No changes found
+        if: steps.check_changes.outputs.changed == 'false'
+        run: echo "✓ No new games or status changes this week."
