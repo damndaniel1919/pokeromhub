@@ -1,15 +1,20 @@
 name: Weekly Game Scraper
 
 on:
+  # Run every Monday at 9am Melbourne time (AEDT = UTC+11, AEST = UTC+10)
+  # 9am AEST = 11pm Sunday UTC
   schedule:
     - cron: '0 23 * * 0'
+
+  # Allow manual trigger from the Actions tab
   workflow_dispatch:
 
 jobs:
-  scrape-and-deploy:
+  scrape-and-pr:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout repo
@@ -26,31 +31,86 @@ jobs:
       - name: Run scraper
         run: python scripts/scraper.py
 
-      - name: Inject games.json into index.html
+      - name: Inject games into index.html
         run: python scripts/inject_games.py
 
       - name: Check for changes
-        id: check_changes
+        id: check
         run: |
           if git diff --quiet; then
             echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes found this week."
           else
             echo "changed=true" >> $GITHUB_OUTPUT
+
             NEW=$(python -c "import json; c=json.load(open('data/changes.json')); print(len(c['new_games']))")
             STATUS=$(python -c "import json; c=json.load(open('data/changes.json')); print(len(c['status_changes']))")
+            NEW_LIST=$(python -c "import json; c=json.load(open('data/changes.json')); print('\n'.join(['- ' + g for g in c['new_games']]))")
+            STATUS_LIST=$(python -c "
+            import json
+            c = json.load(open('data/changes.json'))
+            for s in c['status_changes']:
+                print(f\"- {s['title']}: {s['from']} → {s['to']}\")
+            ")
+            TOTAL=$(python -c "import json; g=json.load(open('data/games.json')); print(len(g))")
+
             echo "new_count=$NEW" >> $GITHUB_OUTPUT
             echo "status_count=$STATUS" >> $GITHUB_OUTPUT
+            echo "total=$TOTAL" >> $GITHUB_OUTPUT
+
+            # Write PR body to a file to handle multiline strings
+            cat > /tmp/pr_body.md << EOF
+          ## 🤖 Weekly Game Scraper Update
+
+          | | |
+          |---|---|
+          | 🆕 New games | $NEW |
+          | 🔄 Status changes | $STATUS |
+          | 📦 Total in database | $TOTAL |
+
+          ---
+
+          ### 🆕 New Games
+          $NEW_LIST
+
+          ### 🔄 Status Changes
+          $STATUS_LIST
+
+          ---
+
+          **To publish:** Review the changes below and click **Merge pull request**.
+          **To discard:** Click **Close pull request**.
+
+          > ⚠️ Check that descriptions look accurate and no junk entries snuck in before merging.
+          EOF
+
+            echo "pr_body_file=/tmp/pr_body.md" >> $GITHUB_OUTPUT
           fi
 
-      - name: Commit and push changes
-        if: steps.check_changes.outputs.changed == 'true'
+      - name: No changes this week
+        if: steps.check.outputs.changed == 'false'
+        run: echo "✓ No new games or status changes detected. No PR needed."
+
+      - name: Create branch and commit changes
+        if: steps.check.outputs.changed == 'true'
         run: |
+          BRANCH="scraper/weekly-update-$(date +%Y-%m-%d)"
           git config user.name "PokeROMHub Bot"
           git config user.email "bot@pokeromhub.com"
+          git checkout -b $BRANCH
           git add data/games.json data/changes.json index.html
-          git commit -m "🤖 Weekly update: +${{ steps.check_changes.outputs.new_count }} games, ${{ steps.check_changes.outputs.status_count }} status changes"
-          git push
+          git commit -m "🤖 Weekly scrape: +${{ steps.check.outputs.new_count }} games, ${{ steps.check.outputs.status_count }} status changes"
+          git push origin $BRANCH
+          echo "branch=$BRANCH" >> $GITHUB_ENV
 
-      - name: No changes found
-        if: steps.check_changes.outputs.changed == 'false'
-        run: echo "✓ No new games or status changes this week."
+      - name: Create Pull Request
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "🤖 Weekly update: +${{ steps.check.outputs.new_count }} new games, ${{ steps.check.outputs.status_count }} status changes (${{ steps.check.outputs.total }} total)" \
+            --body-file /tmp/pr_body.md \
+            --label "automated,scraper"
