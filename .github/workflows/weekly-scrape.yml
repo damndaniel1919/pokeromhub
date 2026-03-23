@@ -75,8 +75,20 @@ jobs:
           git checkout -b $BRANCH
           git add data/games.json data/changes.json index.html
           git commit -m "Weekly scrape: +${{ steps.summary.outputs.new_count }} games, ${{ steps.summary.outputs.status_count }} status changes"
-          git push origin $BRANCH
+          # Force push in case branch already exists from a previous failed run
+          git push origin $BRANCH --force
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+
+      - name: Close any existing PR for this branch
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="scraper/weekly-update-$(date +%Y-%m-%d)"
+          EXISTING=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh pr close $EXISTING --comment "Superseded by new run"
+          fi
 
       - name: Create Pull Request
         if: steps.check.outputs.changed == 'true'
