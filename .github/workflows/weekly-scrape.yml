@@ -22,13 +22,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4
+        run: pip install requests
 
       - name: Run scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python scripts/scraper.py
-
-      - name: Inject games into index.html
-        run: python scripts/inject_games.py
 
       - name: Parse change summary
         id: summary
@@ -47,51 +47,40 @@ jobs:
               out.write(f"new_count={len(new_games)}\n")
               out.write(f"status_count={len(status_changes)}\n")
               out.write(f"total={total}\n")
+              out.write(f"has_changes={'true' if new_games or status_changes else 'false'}\n")
           with open("/tmp/pr_body.md", "w") as f:
               f.write(pr_body)
           print(f"New: {len(new_games)}, Status changes: {len(status_changes)}, Total: {total}")
           PYEOF
 
-      - name: Check for git changes
-        id: check
-        run: |
-          if git diff --quiet; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "No changes this week."
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
-
       - name: No changes this week
-        if: steps.check.outputs.changed == 'false'
+        if: steps.summary.outputs.has_changes == 'false'
         run: echo "No new games or status changes detected. No PR needed."
 
-      - name: Create branch and commit
-        if: steps.check.outputs.changed == 'true'
+      - name: Create branch and commit changes log
+        if: steps.summary.outputs.has_changes == 'true'
         run: |
           BRANCH="scraper/weekly-update-$(date +%Y-%m-%d)"
           git config user.name "PokeROMHub Bot"
           git config user.email "bot@pokeromhub.com"
           git checkout -b $BRANCH
-          git add data/games.json data/changes.json index.html
+          git add data/changes.json
           git commit -m "Weekly scrape: +${{ steps.summary.outputs.new_count }} games, ${{ steps.summary.outputs.status_count }} status changes"
-          # Force push in case branch already exists from a previous failed run
           git push origin $BRANCH --force
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
 
       - name: Close any existing PR for this branch
-        if: steps.check.outputs.changed == 'true'
+        if: steps.summary.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BRANCH="scraper/weekly-update-$(date +%Y-%m-%d)"
           EXISTING=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           if [ -n "$EXISTING" ]; then
             gh pr close $EXISTING --comment "Superseded by new run"
           fi
 
       - name: Create Pull Request
-        if: steps.check.outputs.changed == 'true'
+        if: steps.summary.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
