@@ -248,9 +248,16 @@
 </div>
 
 <script>
-// ─── GAME DATA ───────────────────────────────────────────────────────────────
-const GAMES = [
-];
+// ─── SUPABASE CONFIG ─────────────────────────────────────────────────────────
+const SUPABASE_URL = "https://wslfqpkzwfitniciucru.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndzbGZxcGt6d2ZpdG5pY2l1Y3J1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyMDk2ODcsImV4cCI6MjA4OTc4NTY4N30.2CLX4PoQ-00xDNZxbf_RtHa60AsFgZP9jBh6ZUpGWvk";
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let ALL_GAMES = [];
+// To add box art: replace the img value with a direct image URL.
+// Devs can send you a 16:9 image (ideally 800×450px or similar).
+// Leave img as "" to show the "Art coming soon" placeholder.
+// Games loaded from Supabase
 
 const CATEGORIES = ["All","ROM Hack","RPG Maker","Fan-Made Engine","MMORPG"];
 let activeFilter = "All";
@@ -293,15 +300,15 @@ function buildArtEl(game) {
 
 function render() {
   const q = document.getElementById("search").value.toLowerCase();
-  let games = GAMES.filter(g => {
+  let games = ALL_GAMES.filter(g => {
     const matchCat = activeFilter === "All" || g.type === activeFilter;
     const matchQ = !q || g.title.toLowerCase().includes(q) || g.desc.toLowerCase().includes(q) || g.tags.some(t => t.includes(q));
     return matchCat && matchQ;
   });
 
-  document.getElementById("stat-total").textContent = GAMES.length;
-  document.getElementById("stat-complete").textContent = GAMES.filter(g=>g.status==="complete").length;
-  document.getElementById("stat-active").textContent = GAMES.filter(g=>g.status==="active").length;
+  document.getElementById("stat-total").textContent = ALL_GAMES.length;
+  document.getElementById("stat-complete").textContent = ALL_GAMES.filter(g=>g.status==="complete").length;
+  document.getElementById("stat-active").textContent = ALL_GAMES.filter(g=>g.status==="active").length;
 
   if (!games.length) {
     document.getElementById("grid").innerHTML = `<div class="no-results">NO GAMES FOUND<br><br><span style="color:var(--muted);font-family:var(--body);font-size:14px;">Try a different search or filter</span></div>`;
@@ -359,11 +366,46 @@ function submitForm() {
   document.getElementById("modal-thanks").style.display="block";
 }
 document.addEventListener("keydown", e => { if(e.key==="Escape") closeModal(); });
-initFilters();
-render();
 
 // Melbourne/Sydney AEDT/AEST year
 document.getElementById('footer-year').textContent = new Date().toLocaleString('en-AU', {timeZone:'Australia/Melbourne',year:'numeric'});
+
+// ─── FETCH FROM SUPABASE ─────────────────────────────────────────────────────
+async function fetchGames() {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = `<div class="no-results"><span style="font-family:var(--body);font-size:14px;color:var(--muted)">Loading games...</span></div>`;
+
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/games?select=*&order=title.asc`,
+      {
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": `Bearer ${SUPABASE_KEY}`
+        }
+      }
+    );
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    ALL_GAMES = await res.json();
+
+    // Normalise field names (Supabase returns 'desc' but JS has reserved word issues)
+    ALL_GAMES = ALL_GAMES.map(g => ({
+      ...g,
+      desc: g.description || "",
+      tags: g.tags || [],
+    }));
+
+    initFilters();
+    render();
+
+  } catch (err) {
+    console.error("Failed to load games:", err);
+    grid.innerHTML = `<div class="no-results"><span style="font-family:var(--body);font-size:14px;color:var(--accent)">Failed to load games. Please refresh.</span></div>`;
+  }
+}
+
+fetchGames();
 </script>
 </body>
 </html>
