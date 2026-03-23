@@ -1,12 +1,8 @@
 name: Weekly Game Scraper
 
 on:
-  # Run every Monday at 9am Melbourne time (AEDT = UTC+11, AEST = UTC+10)
-  # 9am AEST = 11pm Sunday UTC
   schedule:
     - cron: '0 23 * * 0'
-
-  # Allow manual trigger from the Actions tab
   workflow_dispatch:
 
 jobs:
@@ -34,64 +30,43 @@ jobs:
       - name: Inject games into index.html
         run: python scripts/inject_games.py
 
-      - name: Check for changes
+      - name: Parse change summary
+        id: summary
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+          with open("data/changes.json") as f:
+              c = json.load(f)
+          new_games = c.get("new_games", [])
+          status_changes = c.get("status_changes", [])
+          total = c.get("total_after", 0)
+          new_list = "\n".join(f"- {g}" for g in new_games) or "_None_"
+          status_list = "\n".join(f"- {s['title']}: {s['from']} -> {s['to']}" for s in status_changes) or "_None_"
+          pr_body = f"""## Weekly Game Scraper Update\n\n| | |\n|---|---|\n| New games | {len(new_games)} |\n| Status changes | {len(status_changes)} |\n| Total in database | {total} |\n\n---\n\n### New Games\n{new_list}\n\n### Status Changes\n{status_list}\n\n---\n\n**To publish:** click Merge pull request. **To discard:** click Close pull request.\n"""
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"new_count={len(new_games)}\n")
+              out.write(f"status_count={len(status_changes)}\n")
+              out.write(f"total={total}\n")
+          with open("/tmp/pr_body.md", "w") as f:
+              f.write(pr_body)
+          print(f"New: {len(new_games)}, Status changes: {len(status_changes)}, Total: {total}")
+          PYEOF
+
+      - name: Check for git changes
         id: check
         run: |
           if git diff --quiet; then
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "No changes found this week."
+            echo "No changes this week."
           else
             echo "changed=true" >> $GITHUB_OUTPUT
-
-            NEW=$(python -c "import json; c=json.load(open('data/changes.json')); print(len(c['new_games']))")
-            STATUS=$(python -c "import json; c=json.load(open('data/changes.json')); print(len(c['status_changes']))")
-            NEW_LIST=$(python -c "import json; c=json.load(open('data/changes.json')); print('\n'.join(['- ' + g for g in c['new_games']]))")
-            STATUS_LIST=$(python -c "
-            import json
-            c = json.load(open('data/changes.json'))
-            for s in c['status_changes']:
-                print(f\"- {s['title']}: {s['from']} → {s['to']}\")
-            ")
-            TOTAL=$(python -c "import json; g=json.load(open('data/games.json')); print(len(g))")
-
-            echo "new_count=$NEW" >> $GITHUB_OUTPUT
-            echo "status_count=$STATUS" >> $GITHUB_OUTPUT
-            echo "total=$TOTAL" >> $GITHUB_OUTPUT
-
-            # Write PR body to a file to handle multiline strings
-            cat > /tmp/pr_body.md << EOF
-          ## 🤖 Weekly Game Scraper Update
-
-          | | |
-          |---|---|
-          | 🆕 New games | $NEW |
-          | 🔄 Status changes | $STATUS |
-          | 📦 Total in database | $TOTAL |
-
-          ---
-
-          ### 🆕 New Games
-          $NEW_LIST
-
-          ### 🔄 Status Changes
-          $STATUS_LIST
-
-          ---
-
-          **To publish:** Review the changes below and click **Merge pull request**.
-          **To discard:** Click **Close pull request**.
-
-          > ⚠️ Check that descriptions look accurate and no junk entries snuck in before merging.
-          EOF
-
-            echo "pr_body_file=/tmp/pr_body.md" >> $GITHUB_OUTPUT
           fi
 
       - name: No changes this week
         if: steps.check.outputs.changed == 'false'
-        run: echo "✓ No new games or status changes detected. No PR needed."
+        run: echo "No new games or status changes detected. No PR needed."
 
-      - name: Create branch and commit changes
+      - name: Create branch and commit
         if: steps.check.outputs.changed == 'true'
         run: |
           BRANCH="scraper/weekly-update-$(date +%Y-%m-%d)"
@@ -99,9 +74,9 @@ jobs:
           git config user.email "bot@pokeromhub.com"
           git checkout -b $BRANCH
           git add data/games.json data/changes.json index.html
-          git commit -m "🤖 Weekly scrape: +${{ steps.check.outputs.new_count }} games, ${{ steps.check.outputs.status_count }} status changes"
+          git commit -m "Weekly scrape: +${{ steps.summary.outputs.new_count }} games, ${{ steps.summary.outputs.status_count }} status changes"
           git push origin $BRANCH
-          echo "branch=$BRANCH" >> $GITHUB_ENV
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
 
       - name: Create Pull Request
         if: steps.check.outputs.changed == 'true'
@@ -110,7 +85,6 @@ jobs:
         run: |
           gh pr create \
             --base main \
-            --head "$branch" \
-            --title "🤖 Weekly update: +${{ steps.check.outputs.new_count }} new games, ${{ steps.check.outputs.status_count }} status changes (${{ steps.check.outputs.total }} total)" \
-            --body-file /tmp/pr_body.md \
-            --label "automated,scraper"
+            --head "$BRANCH" \
+            --title "Weekly update: +${{ steps.summary.outputs.new_count }} new games, ${{ steps.summary.outputs.status_count }} status changes (${{ steps.summary.outputs.total }} total)" \
+            --body-file /tmp/pr_body.md
